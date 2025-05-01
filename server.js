@@ -11,9 +11,13 @@ const port = 3001;
 app.use(express.json());
 app.use(cors());
 
-const apiKey = process.env.BINANCE_API_KEY;
-const apiSecret = process.env.BINANCE_API_SECRET;
+const apiKey = process.env.API_KEY;
+const apiSecret = process.env.API_SECRET;
 const baseURL = "https://fapi.binance.com";
+
+console.log(apiKey);
+console.log(apiSecret);
+
 
 app.post("/start-bot", async (req, res) => {
   try {
