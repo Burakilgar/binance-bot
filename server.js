@@ -1,83 +1,102 @@
-// Gerekli modüller
-require('dotenv').config();  
-const express = require('express');  
-const cors = require('cors');  
-const bodyParser = require('body-parser');  
-const axios = require('axios');  
-const crypto = require('crypto');  
-const querystring = require('querystring');  
+const express = require("express");
+const axios = require("axios");
+const crypto = require("crypto");
+const dotenv = require("dotenv");
+const cors = require("cors");
 
-const app = express();  
-app.use(cors()); // CORS aktif  
-app.use(bodyParser.json()); // JSON gövdesi alabilmek  
+dotenv.config();
 
-// API bilgileriniz - .env dosyasında tanımlı olmalı  
-const API_KEY = process.env.API_KEY;  
-const API_SECRET = process.env.API_SECRET;  
-const BASE_URL = 'https://fapi.binance.com';  
+const app = express();
+const port = 3001;
 
-// Zaman damgası ve imza hesaplamaları
-function sign(query) {  
-  return crypto.createHmac('sha256', API_SECRET).update(query).digest('hex');  
-}
+app.use(express.json());
+app.use(cors());
 
-// Parametreleri sorgu stringine çevir ve imzalı query oluştur
-function buildQuery(params) {  
-  const query = querystring.stringify(params);  
-  return `${query}&signature=${sign(query)}`;  
-}
+const apiKey = process.env.API_KEY;
+const apiSecret = process.env.API_SECRET;
 
-app.post('/start-bot', async (req, res) => {  
-  const { symbol, leverage, positionPercent } = req.body;  
-  const targetSymbol = symbol || 'BTCUSDT';  
+console.log("API Key:", apiKey);
+console.log("API Secret:", apiSecret); // Geçici olarak
 
-  try {  
+const baseURL = "https://fapi.binance.com";
+
+app.post("/start-bot", async (req, res) => {
+  try {
+    const { symbol, leverage, positionPercent } = req.body;
+
     const timestamp = Date.now();
+    const balanceParams = `timestamp=${timestamp}&recvWindow=5000`;
+    const balanceSignature = crypto
+      .createHmac("sha256", apiSecret)
+      .update(balanceParams)
+      .digest("hex");
 
-    // Leverage ayarla
+    const balanceResponse = await axios.get(
+      `${baseURL}/fapi/v2/account?${balanceParams}&signature=${balanceSignature}`,
+      { headers: { "X-MBX-APIKEY": apiKey } }
+    );
+
+    const usdtBalance = parseFloat(balanceResponse.data.totalWalletBalance);
+
     const leverageParams = {
-      symbol: targetSymbol,
+      symbol,
       leverage,
-      timestamp
+      timestamp: Date.now(),
+      recvWindow: 5000
     };
-    
-    await axios.post(`${BASE_URL}/fapi/v1/leverage?${buildQuery(leverageParams)}`, {}, {  
-      headers: { 'X-MBX-APIKEY': API_KEY },  
-    });
 
-    // Hesaptaki USDT bakiyesi
-    const balanceParams = { timestamp };
-    const balanceRes = await axios.get(`${BASE_URL}/fapi/v2/account?${buildQuery(balanceParams)}`, {  
-      headers: { 'X-MBX-APIKEY': API_KEY },  
-    });  
+    const leverageQuery = new URLSearchParams(leverageParams).toString();
+    const leverageSignature = crypto
+      .createHmac("sha256", apiSecret)
+      .update(leverageQuery)
+      .digest("hex");
 
-    const usdtAsset = balanceRes.data.assets.find(a => a.asset === 'USDT');
-    if (!usdtAsset) {
-      return res.status(400).json({ success: false, message: 'USDT asset not found' });
-    }
+    await axios.post(
+      `${baseURL}/fapi/v1/leverage?${leverageQuery}&signature=${leverageSignature}`,
+      null,
+      { headers: { "X-MBX-APIKEY": apiKey } }
+    );
 
-    const usdtBalance = parseFloat(usdtAsset.availableBalance);  
-    const orderQty = ((usdtBalance * positionPercent) / 100).toFixed(2);  
+    const orderUSDT = (usdtBalance * (positionPercent / 100)) * leverage;
 
-    // Market alış emri
+    const priceRes = await axios.get(`${baseURL}/fapi/v1/ticker/price?symbol=${symbol}`);
+    const price = parseFloat(priceRes.data.price);
+
+    const quantity = (orderUSDT / price).toFixed(3);
+
     const orderParams = {
-      symbol: targetSymbol,
-      side: 'BUY',
-      type: 'MARKET',
-      quantity: orderQty,
-      timestamp
+      symbol,
+      side: "BUY",
+      type: "MARKET",
+      quantity,
+      timestamp: Date.now(),
+      recvWindow: 5000
     };
 
-    await axios.post(`${BASE_URL}/fapi/v1/order?${buildQuery(orderParams)}`, {}, {  
-      headers: { 'X-MBX-APIKEY': API_KEY },  
-    });  
+    const orderQuery = new URLSearchParams(orderParams).toString();
+    const orderSignature = crypto
+      .createHmac("sha256", apiSecret)
+      .update(orderQuery)
+      .digest("hex");
 
-    res.json({ success: true, message: `Buy order placed on ${targetSymbol}` });  
+    const response = await axios.post(
+      `${baseURL}/fapi/v1/order?${orderQuery}&signature=${orderSignature}`,
+      null,
+      { headers: { "X-MBX-APIKEY": apiKey } }
+    );
 
-  } catch (err) {  
-    console.error('Hata:', err.response?.data || err.message);  
-    res.status(500).json({ success: false, message: 'Order failed', error: err.message });  
-  }  
-});  
+    res.json({ success: true, data: response.data });
 
-app.listen(3001, () => console.log('Bot backend çalışıyor, port 3001'));
+  } catch (error) {
+    console.error("Hata:", error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      message: "Order failed",
+      error: error.response?.data || error.message
+    });
+  }
+});
+
+app.listen(port, () => {
+  console.log(`Bot backend çalışıyor, port ${port}`);
+});
